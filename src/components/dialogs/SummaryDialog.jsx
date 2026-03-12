@@ -118,11 +118,7 @@ export function SummaryDialog({ table, isRegenerate = false, existingSummaryId =
       viewsByTable[tableKey].push(view);
     });
 
-    // Apply views to each table - only open edit modal for the first one
-    let firstTableKey = null;
-    let firstView = null;
-    let firstTableData = null;
-
+    // Apply views directly to each table
     Object.entries(viewsByTable).forEach(([tableKey, views]) => {
       const tableData = tableKey === 'primary' 
         ? primaryTable 
@@ -130,51 +126,76 @@ export function SummaryDialog({ table, isRegenerate = false, existingSummaryId =
       
       if (!tableData) return;
 
-      // Save the first one to open in edit modal
-      if (!firstTableKey) {
-        firstTableKey = tableKey;
-        firstView = views[0];
-        firstTableData = tableData;
-      }
-    });
+      views.forEach(view => {
+        // Build viewInfo from the suggestion
+        let viewInfo;
+        
+        if (view.type === 'combined') {
+          viewInfo = {
+            mode: view.aggregate ? 'aggregate' : 'filter',
+            hasFilters: view.filters && view.filters.length > 0,
+            filters: (view.filters || []).map(f => ({
+              columnName: f.columnName,
+              value: f.value || ''
+            })),
+            groupBy: [],
+            aggregateColumns: view.targetColumn ? [view.targetColumn] : []
+          };
+        } else {
+          viewInfo = {
+            mode: view.type === 'aggregate' ? 'aggregate' : 'filter',
+            hasFilters: view.type === 'filter',
+            filters: view.type === 'filter' ? [{
+              columnName: view.columnName,
+              value: view.suggestedValue || ''
+            }] : [],
+            groupBy: view.type === 'groupBy' ? [view.columnName] : [],
+            aggregateColumns: view.type === 'aggregate' ? [] : []
+          };
+        }
 
-    if (firstTableKey && firstView && firstTableData) {
-      // Build viewInfo from the combined view suggestion
-      let newViewInfo;
-      
-      if (firstView.type === 'combined') {
-        newViewInfo = {
-          mode: firstView.aggregate ? 'aggregate' : 'filter',
-          hasFilters: firstView.filters && firstView.filters.length > 0,
-          filters: (firstView.filters || []).map(f => ({
-            columnName: f.columnName,
-            value: f.value || ''
-          })),
-          groupBy: [],
-          aggregateColumns: firstView.targetColumn ? [firstView.targetColumn] : []
-        };
-      } else {
-        newViewInfo = {
-          mode: firstView.type === 'aggregate' ? 'aggregate' : 'filter',
-          hasFilters: firstView.type === 'filter',
-          filters: firstView.type === 'filter' ? [{
-            columnName: firstView.columnName,
-            value: firstView.suggestedValue || ''
-          }] : [],
-          groupBy: firstView.type === 'groupBy' ? [firstView.columnName] : [],
-          aggregateColumns: firstView.type === 'aggregate' ? [] : []
-        };
-      }
+        // Apply filters to get filtered rows
+        const sourceRows = tableData.rows || [];
+        const headers = sourceRows[0] || [];
+        let filteredRows = sourceRows.slice(1);
 
-      // Open edit modal for the suggested view
-      setEditingView({
-        tableKey: firstTableKey,
-        viewId: null,
-        table: firstTableData,
-        viewInfo: newViewInfo,
-        isNew: true
+        // Apply filters
+        if (viewInfo.filters && viewInfo.filters.length > 0) {
+          viewInfo.filters.forEach(filter => {
+            const colIdx = headers.findIndex(h => 
+              String(h).toLowerCase() === filter.columnName.toLowerCase()
+            );
+            if (colIdx >= 0 && filter.value) {
+              filteredRows = filteredRows.filter(row => 
+                String(row[colIdx] || '').toLowerCase() === filter.value.toLowerCase()
+              );
+            }
+          });
+        }
+
+        // Create the new view
+        const newView = {
+          id: generateViewId(),
+          filteredRows: [headers, ...filteredRows],
+          viewInfo,
+          rows: [headers, ...filteredRows]
+        };
+
+        // Add view to the appropriate table
+        if (tableKey === 'primary') {
+          setPrimaryTable(prev => ({
+            ...prev,
+            views: [...prev.views, newView]
+          }));
+        } else {
+          setAdditionalTables(prev => prev.map(t => 
+            t.uniqueKey === tableKey 
+              ? { ...t, views: [...t.views, newView] }
+              : t
+          ));
+        }
       });
-    }
+    });
 
     setShowSuggestionModal(false);
     // Expand all tables that received suggestions
