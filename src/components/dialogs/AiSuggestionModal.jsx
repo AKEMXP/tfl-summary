@@ -1,31 +1,75 @@
 import { useState } from 'react';
-import { X, Lightbulb, Table, Check, Plus, Filter, AlertTriangle, Sparkles } from 'lucide-react';
+import { X, Lightbulb, Table, Check, Filter, Layers, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 import './AiSuggestionModal.css';
 
-const MAX_ROWS = 500;
+export function AiSuggestionModal({ suggestions, onApplyViews, onClose }) {
+  const [selectedViews, setSelectedViews] = useState(() => {
+    const initial = {};
+    suggestions.suggestions.forEach(s => {
+      initial[s.table.uniqueKey] = s.views.map((_, i) => i);
+    });
+    return initial;
+  });
+  const [expandedTables, setExpandedTables] = useState(() => {
+    const initial = {};
+    suggestions.suggestions.forEach(s => {
+      initial[s.table.uniqueKey] = true;
+    });
+    return initial;
+  });
 
-export function AiSuggestionModal({ suggestions, onAccept, onAcceptAll, onClose }) {
-  const [selectedSuggestions, setSelectedSuggestions] = useState(
-    suggestions.suggestions.map(s => s.table.id)
-  );
-
-  const toggleSuggestion = (tableId) => {
-    setSelectedSuggestions(prev => 
-      prev.includes(tableId)
-        ? prev.filter(id => id !== tableId)
-        : [...prev, tableId]
-    );
+  const toggleView = (tableKey, viewIndex) => {
+    setSelectedViews(prev => {
+      const current = prev[tableKey] || [];
+      if (current.includes(viewIndex)) {
+        return { ...prev, [tableKey]: current.filter(i => i !== viewIndex) };
+      }
+      return { ...prev, [tableKey]: [...current, viewIndex] };
+    });
   };
 
-  const handleAcceptSelected = () => {
-    const selected = suggestions.suggestions.filter(s => 
-      selectedSuggestions.includes(s.table.id)
-    );
-    onAcceptAll(selected);
+  const toggleTable = (tableKey) => {
+    setExpandedTables(prev => ({ ...prev, [tableKey]: !prev[tableKey] }));
   };
 
-  const getRowCount = (table) => {
-    return (table.rows?.length || 1) - 1;
+  const handleApply = () => {
+    const viewsToApply = [];
+    suggestions.suggestions.forEach(s => {
+      const selected = selectedViews[s.table.uniqueKey] || [];
+      selected.forEach(idx => {
+        viewsToApply.push({
+          tableKey: s.table.isPrimary ? 'primary' : s.table.uniqueKey,
+          view: s.views[idx]
+        });
+      });
+    });
+    onApplyViews(viewsToApply);
+  };
+
+  const getTotalSelected = () => {
+    return Object.values(selectedViews).reduce((sum, arr) => sum + arr.length, 0);
+  };
+
+  const getViewIcon = (type) => {
+    switch (type) {
+      case 'filter': return Filter;
+      case 'groupBy': return Layers;
+      case 'aggregate': return Layers;
+      default: return Filter;
+    }
+  };
+
+  const getViewLabel = (view) => {
+    switch (view.type) {
+      case 'filter':
+        return `Filter: ${view.columnName} = "${view.suggestedValue}"`;
+      case 'groupBy':
+        return `Group by: ${view.columnName}`;
+      case 'aggregate':
+        return `${view.action} values`;
+      default:
+        return 'View';
+    }
   };
 
   if (!suggestions.suggestions || suggestions.suggestions.length === 0) {
@@ -35,7 +79,7 @@ export function AiSuggestionModal({ suggestions, onAccept, onAcceptAll, onClose 
           <div className="modal-header">
             <h3>
               <Lightbulb size={18} />
-              AI Table Suggestions
+              AI View Suggestions
             </h3>
             <button className="close-btn" onClick={onClose}>
               <X size={18} />
@@ -43,10 +87,10 @@ export function AiSuggestionModal({ suggestions, onAccept, onAcceptAll, onClose 
           </div>
           <div className="modal-content empty-suggestions">
             <div className="empty-icon">
-              <Table size={32} />
+              <Filter size={32} />
             </div>
-            <h4>No Matching Tables Found</h4>
-            <p>The AI couldn't identify any relevant tables based on your example summary. Try adding more specific context to your example or add tables manually.</p>
+            <h4>No View Suggestions</h4>
+            <p>{suggestions.analysis || "The AI couldn't identify specific view patterns based on your input. Try mentioning operations like 'count', 'list', 'group by', or specific filters in your example or instructions."}</p>
           </div>
           <div className="modal-footer">
             <button className="btn secondary" onClick={onClose}>
@@ -64,7 +108,7 @@ export function AiSuggestionModal({ suggestions, onAccept, onAcceptAll, onClose 
         <div className="modal-header">
           <h3>
             <Lightbulb size={18} />
-            AI Table Suggestions
+            AI View Suggestions
           </h3>
           <button className="close-btn" onClick={onClose}>
             <X size={18} />
@@ -78,68 +122,55 @@ export function AiSuggestionModal({ suggestions, onAccept, onAcceptAll, onClose 
           </div>
 
           <div className="suggestions-list">
-            <div className="suggestions-header">
-              <span>Suggested Tables ({suggestions.suggestions.length})</span>
-              <button 
-                className="select-all-btn"
-                onClick={() => {
-                  if (selectedSuggestions.length === suggestions.suggestions.length) {
-                    setSelectedSuggestions([]);
-                  } else {
-                    setSelectedSuggestions(suggestions.suggestions.map(s => s.table.id));
-                  }
-                }}
-              >
-                {selectedSuggestions.length === suggestions.suggestions.length ? 'Deselect All' : 'Select All'}
-              </button>
-            </div>
-
-            {suggestions.suggestions.map((suggestion, idx) => {
-              const rowCount = getRowCount(suggestion.table);
-              const exceedsLimit = rowCount > MAX_ROWS;
-              const isSelected = selectedSuggestions.includes(suggestion.table.id);
+            {suggestions.suggestions.map((tableSuggestion) => {
+              const tableKey = tableSuggestion.table.uniqueKey;
+              const isExpanded = expandedTables[tableKey];
+              const selectedCount = (selectedViews[tableKey] || []).length;
 
               return (
-                <div 
-                  key={`${suggestion.table.id}-${idx}`}
-                  className={`suggestion-card ${isSelected ? 'selected' : ''}`}
-                  onClick={() => toggleSuggestion(suggestion.table.id)}
-                >
-                  <div className="suggestion-checkbox">
-                    {isSelected && <Check size={14} />}
+                <div key={tableKey} className="table-suggestion-group">
+                  <div 
+                    className="table-suggestion-header"
+                    onClick={() => toggleTable(tableKey)}
+                  >
+                    {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    <Table size={14} />
+                    <span className="table-name">
+                      {tableSuggestion.table.name}
+                      {tableSuggestion.table.isPrimary && <span className="primary-badge">Primary</span>}
+                    </span>
+                    <span className="table-source">{tableSuggestion.table.sourceFile}</span>
+                    <span className="row-count">{tableSuggestion.rowCount} rows</span>
+                    <span className="selected-count">
+                      {selectedCount}/{tableSuggestion.views.length} selected
+                    </span>
                   </div>
-                  
-                  <div className="suggestion-content">
-                    <div className="suggestion-header">
-                      <Table size={14} />
-                      <span className="suggestion-name">{suggestion.table.name}</span>
-                      <span className="suggestion-source">{suggestion.table.sourceFile}</span>
+
+                  {isExpanded && (
+                    <div className="view-suggestions">
+                      {tableSuggestion.views.map((view, idx) => {
+                        const isSelected = (selectedViews[tableKey] || []).includes(idx);
+                        const ViewIcon = getViewIcon(view.type);
+
+                        return (
+                          <div 
+                            key={idx}
+                            className={`view-suggestion-card ${isSelected ? 'selected' : ''}`}
+                            onClick={() => toggleView(tableKey, idx)}
+                          >
+                            <div className="view-checkbox">
+                              {isSelected && <Check size={14} />}
+                            </div>
+                            <ViewIcon size={14} className="view-type-icon" />
+                            <div className="view-details">
+                              <span className="view-label">{getViewLabel(view)}</span>
+                              <span className="view-reason">{view.reason}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                    
-                    <p className="suggestion-reason">{suggestion.reason}</p>
-                    
-                    <div className="suggestion-meta">
-                      <span className={`row-badge ${exceedsLimit ? 'exceeds' : 'ok'}`}>
-                        {exceedsLimit ? <AlertTriangle size={12} /> : <Check size={12} />}
-                        {rowCount} rows
-                      </span>
-                      
-                      {suggestion.matchedKeywords.length > 0 && (
-                        <div className="matched-keywords">
-                          {suggestion.matchedKeywords.slice(0, 4).map(kw => (
-                            <span key={kw} className="keyword-tag">{kw}</span>
-                          ))}
-                        </div>
-                      )}
-                      
-                      {suggestion.suggestedFilter && (
-                        <span className="filter-hint">
-                          <Filter size={12} />
-                          Filtering recommended
-                        </span>
-                      )}
-                    </div>
-                  </div>
+                  )}
                 </div>
               );
             })}
@@ -152,11 +183,11 @@ export function AiSuggestionModal({ suggestions, onAccept, onAcceptAll, onClose 
           </button>
           <button 
             className="btn primary"
-            onClick={handleAcceptSelected}
-            disabled={selectedSuggestions.length === 0}
+            onClick={handleApply}
+            disabled={getTotalSelected() === 0}
           >
-            <Plus size={16} />
-            Add {selectedSuggestions.length} Table{selectedSuggestions.length !== 1 ? 's' : ''}
+            <Check size={16} />
+            Apply {getTotalSelected()} View{getTotalSelected() !== 1 ? 's' : ''}
           </button>
         </div>
       </div>

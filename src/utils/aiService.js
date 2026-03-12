@@ -114,83 +114,112 @@ export async function rewriteSummary(table, originalSummary, instruction) {
   };
 }
 
-export async function suggestTablesForSummary(exampleSummary, primaryTable, availableTables) {
+export async function suggestViewsForSummary(exampleAndInstruction, selectedTables) {
   await new Promise(resolve => setTimeout(resolve, 1500));
   
   const suggestions = [];
-  const exampleLower = exampleSummary.toLowerCase();
+  const inputLower = exampleAndInstruction.toLowerCase();
   
-  const keywords = {
-    adverse: ['adverse', 'ae', 'safety', 'event', 'teae'],
-    demographic: ['demographic', 'baseline', 'age', 'gender', 'population'],
-    efficacy: ['efficacy', 'endpoint', 'primary', 'secondary', 'outcome'],
-    disposition: ['disposition', 'discontinue', 'complete', 'withdraw'],
-    vital: ['vital', 'blood pressure', 'heart rate', 'temperature'],
-    lab: ['laboratory', 'lab', 'hematology', 'chemistry', 'urinalysis'],
-    conmed: ['concomitant', 'medication', 'prior', 'drug'],
-    exposure: ['exposure', 'dose', 'duration', 'compliance']
-  };
+  const viewPatterns = [
+    { keywords: ['count', 'number of', 'how many', 'total'], type: 'aggregate', action: 'Count' },
+    { keywords: ['list', 'enumerate', 'all'], type: 'aggregate', action: 'List' },
+    { keywords: ['by treatment', 'by group', 'per arm', 'each arm'], type: 'groupBy', column: 'treatment' },
+    { keywords: ['by subject', 'per patient', 'each patient'], type: 'groupBy', column: 'subject' },
+    { keywords: ['serious', 'severe', 'grade 3', 'grade 4'], type: 'filter', column: 'severity', value: 'Serious' },
+    { keywords: ['treatment-related', 'drug-related', 'related'], type: 'filter', column: 'relationship', value: 'Related' },
+    { keywords: ['discontinued', 'withdrawal', 'stopped'], type: 'filter', column: 'action', value: 'Discontinued' },
+    { keywords: ['primary', 'main endpoint'], type: 'filter', column: 'category', value: 'Primary' },
+    { keywords: ['male', 'female', 'gender'], type: 'groupBy', column: 'gender' },
+    { keywords: ['age group', 'age range'], type: 'groupBy', column: 'age' },
+  ];
   
-  const matchedCategories = [];
-  Object.entries(keywords).forEach(([category, terms]) => {
-    if (terms.some(term => exampleLower.includes(term))) {
-      matchedCategories.push(category);
-    }
-  });
+  const matchedPatterns = viewPatterns.filter(p => 
+    p.keywords.some(k => inputLower.includes(k))
+  );
   
-  availableTables.forEach(table => {
-    if (table.id === primaryTable.id && table.sourceFile === primaryTable.sourceFile) {
-      return;
-    }
+  selectedTables.forEach(table => {
+    const headers = table.rows?.[0] || [];
+    const headersLower = headers.map(h => String(h).toLowerCase());
+    const rowCount = (table.rows?.length || 1) - 1;
+    const tableSuggestions = [];
     
-    const tableLower = table.name.toLowerCase();
-    let relevanceScore = 0;
-    let matchedKeywords = [];
-    
-    matchedCategories.forEach(category => {
-      keywords[category].forEach(term => {
-        if (tableLower.includes(term)) {
-          relevanceScore += 2;
-          if (!matchedKeywords.includes(term)) {
-            matchedKeywords.push(term);
-          }
+    matchedPatterns.forEach(pattern => {
+      if (pattern.type === 'filter') {
+        const colIdx = headersLower.findIndex(h => 
+          h.includes(pattern.column) || pattern.column.includes(h)
+        );
+        if (colIdx >= 0) {
+          tableSuggestions.push({
+            type: 'filter',
+            columnIndex: colIdx,
+            columnName: headers[colIdx],
+            suggestedValue: pattern.value,
+            reason: `Filter by "${headers[colIdx]}" based on your mention of "${pattern.keywords.find(k => inputLower.includes(k))}"`
+          });
         }
-      });
-    });
-    
-    Object.values(keywords).flat().forEach(term => {
-      if (exampleLower.includes(term) && tableLower.includes(term)) {
-        relevanceScore += 1;
-        if (!matchedKeywords.includes(term)) {
-          matchedKeywords.push(term);
+      } else if (pattern.type === 'groupBy') {
+        const colIdx = headersLower.findIndex(h => 
+          h.includes(pattern.column) || pattern.column.includes(h)
+        );
+        if (colIdx >= 0) {
+          tableSuggestions.push({
+            type: 'groupBy',
+            columnIndex: colIdx,
+            columnName: headers[colIdx],
+            reason: `Group by "${headers[colIdx]}" to organize data as mentioned in your input`
+          });
+        }
+      } else if (pattern.type === 'aggregate') {
+        const numericCols = headers.filter((h, i) => {
+          if (i === 0) return false;
+          const sampleValues = table.rows?.slice(1, 5).map(r => r[i]) || [];
+          return sampleValues.some(v => !isNaN(parseFloat(v)));
+        });
+        if (numericCols.length > 0 || pattern.action === 'Count') {
+          tableSuggestions.push({
+            type: 'aggregate',
+            action: pattern.action,
+            reason: `${pattern.action} values based on your mention of "${pattern.keywords.find(k => inputLower.includes(k))}"`
+          });
         }
       }
     });
     
-    if (relevanceScore > 0) {
-      const rowCount = (table.rows?.length || 1) - 1;
-      let suggestedFilter = null;
+    if (tableSuggestions.length === 0 && rowCount > 100) {
+      const categoryCols = headersLower.map((h, i) => ({ h, i }))
+        .filter(({ h }) => h.includes('category') || h.includes('type') || h.includes('class') || h.includes('term'))
+        .map(({ i }) => i);
       
-      if (rowCount > 100) {
-        suggestedFilter = generateSuggestedFilter(table, exampleLower);
+      if (categoryCols.length > 0) {
+        tableSuggestions.push({
+          type: 'groupBy',
+          columnIndex: categoryCols[0],
+          columnName: headers[categoryCols[0]],
+          reason: `Consider grouping by "${headers[categoryCols[0]]}" to reduce ${rowCount} rows`
+        });
       }
-      
+    }
+    
+    if (tableSuggestions.length > 0) {
       suggestions.push({
-        table,
-        relevanceScore,
-        matchedKeywords,
-        suggestedFilter,
-        reason: generateSuggestionReason(table, matchedKeywords, exampleSummary)
+        table: {
+          name: table.name,
+          sourceFile: table.sourceFile,
+          uniqueKey: table.uniqueKey,
+          isPrimary: table.isPrimary
+        },
+        rowCount,
+        views: tableSuggestions
       });
     }
   });
-  
-  suggestions.sort((a, b) => b.relevanceScore - a.relevanceScore);
   
   return {
     success: true,
-    suggestions: suggestions.slice(0, 5),
-    analysis: generateAnalysisSummary(exampleSummary, matchedCategories)
+    suggestions,
+    analysis: matchedPatterns.length > 0 
+      ? `Based on your input, I identified patterns suggesting: ${[...new Set(matchedPatterns.map(p => p.type))].join(', ')} operations.`
+      : "I couldn't identify specific view patterns. Try mentioning operations like 'count', 'list', 'group by', or specific filters."
   };
 }
 

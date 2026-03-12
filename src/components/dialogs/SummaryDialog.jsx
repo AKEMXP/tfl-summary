@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, Sparkles, Loader2, Plus, Table, Trash2, ChevronDown, Filter, AlertTriangle, Check, Lightbulb, Layers, ChevronRight } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { generateTableSummary, suggestTablesForSummary } from '../../utils/aiService';
+import { generateTableSummary, suggestViewsForSummary } from '../../utils/aiService';
 import { TableEditModal } from './TableEditModal';
 import { AiSuggestionModal } from './AiSuggestionModal';
 import './Dialogs.css';
@@ -89,7 +89,14 @@ export function SummaryDialog({ table, isRegenerate = false, existingSummaryId =
     try {
       // Combine example and instruction for analysis
       const combinedInput = [example.trim(), instruction.trim()].filter(Boolean).join('\n\n');
-      const result = await suggestTablesForSummary(combinedInput, primaryTable, allSourceTables);
+      
+      // Build list of selected tables (primary + additional)
+      const selectedTables = [
+        { ...primaryTable, isPrimary: true },
+        ...additionalTables.map(t => ({ ...t, isPrimary: false }))
+      ];
+      
+      const result = await suggestViewsForSummary(combinedInput, selectedTables);
       if (result.success) {
         setSuggestions(result);
         setShowSuggestionModal(true);
@@ -101,21 +108,57 @@ export function SummaryDialog({ table, isRegenerate = false, existingSummaryId =
     }
   };
 
-  const handleAcceptAllSuggestions = (selectedSuggestions) => {
-    const newTables = selectedSuggestions
-      .filter(s => {
-        const suggestionKey = `${s.table.fileId}-${s.table.id}`;
-        // Exclude primary table and already added tables
-        return suggestionKey !== primaryUniqueKey &&
-               !additionalTables.some(at => at.uniqueKey === suggestionKey);
-      })
-      .map(suggestion => ({
-        ...suggestion.table,
-        uniqueKey: `${suggestion.table.fileId}-${suggestion.table.id}`,
-        views: []
-      }));
-    setAdditionalTables(prev => [...prev, ...newTables]);
+  const handleApplyViews = (viewsToApply) => {
+    // Group views by table
+    const viewsByTable = {};
+    viewsToApply.forEach(({ tableKey, view }) => {
+      if (!viewsByTable[tableKey]) {
+        viewsByTable[tableKey] = [];
+      }
+      viewsByTable[tableKey].push(view);
+    });
+
+    // Apply views to each table
+    Object.entries(viewsByTable).forEach(([tableKey, views]) => {
+      const tableData = tableKey === 'primary' 
+        ? primaryTable 
+        : additionalTables.find(t => t.uniqueKey === tableKey);
+      
+      if (!tableData) return;
+
+      // Create view configs from suggestions
+      views.forEach(view => {
+        const newViewInfo = {
+          mode: view.type === 'aggregate' ? 'aggregate' : 'filter',
+          hasFilters: view.type === 'filter',
+          filters: view.type === 'filter' ? [{
+            columnName: view.columnName,
+            value: view.suggestedValue || ''
+          }] : [],
+          groupBy: view.type === 'groupBy' ? [view.columnName] : [],
+          aggregateColumns: view.type === 'aggregate' ? [] : []
+        };
+
+        // Open edit modal for first suggested view (user can fine-tune)
+        setEditingView({
+          tableKey,
+          viewId: null,
+          table: tableData,
+          viewInfo: newViewInfo,
+          isNew: true
+        });
+      });
+    });
+
     setShowSuggestionModal(false);
+    // Expand all tables that received suggestions
+    setExpandedTables(prev => {
+      const updated = { ...prev };
+      Object.keys(viewsByTable).forEach(key => {
+        updated[key === 'primary' ? 'primary' : key] = true;
+      });
+      return updated;
+    });
   };
 
   const getRowCount = (view) => {
@@ -541,7 +584,7 @@ export function SummaryDialog({ table, isRegenerate = false, existingSummaryId =
                 className="ai-suggest-btn"
                 onClick={handleAiSuggest}
                 disabled={(!example.trim() && !instruction.trim()) || aiSuggesting}
-                title={(!example.trim() && !instruction.trim()) ? 'Enter an example or instruction first' : 'AI will analyze your input and suggest relevant tables'}
+                title={(!example.trim() && !instruction.trim()) ? 'Enter an example or instruction first' : 'AI will analyze your input and suggest views (filters, grouping) for selected tables'}
               >
                 {aiSuggesting ? (
                   <>
@@ -551,7 +594,7 @@ export function SummaryDialog({ table, isRegenerate = false, existingSummaryId =
                 ) : (
                   <>
                     <Lightbulb size={14} />
-                    AI Suggest Tables
+                    AI Suggest Views
                   </>
                 )}
               </button>
@@ -629,8 +672,7 @@ export function SummaryDialog({ table, isRegenerate = false, existingSummaryId =
       {showSuggestionModal && suggestions && (
         <AiSuggestionModal
           suggestions={suggestions}
-          onAccept={() => {}}
-          onAcceptAll={handleAcceptAllSuggestions}
+          onApplyViews={handleApplyViews}
           onClose={() => setShowSuggestionModal(false)}
         />
       )}
