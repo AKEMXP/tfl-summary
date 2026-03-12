@@ -119,88 +119,172 @@ export async function suggestViewsForSummary(exampleAndInstruction, selectedTabl
   
   const suggestions = [];
   const inputLower = exampleAndInstruction.toLowerCase();
+  const inputOriginal = exampleAndInstruction;
   
-  const viewPatterns = [
-    { keywords: ['count', 'number of', 'how many', 'total'], type: 'aggregate', action: 'Count' },
-    { keywords: ['list', 'enumerate', 'all'], type: 'aggregate', action: 'List' },
-    { keywords: ['by treatment', 'by group', 'per arm', 'each arm'], type: 'groupBy', column: 'treatment' },
-    { keywords: ['by subject', 'per patient', 'each patient'], type: 'groupBy', column: 'subject' },
-    { keywords: ['serious', 'severe', 'grade 3', 'grade 4'], type: 'filter', column: 'severity', value: 'Serious' },
-    { keywords: ['treatment-related', 'drug-related', 'related'], type: 'filter', column: 'relationship', value: 'Related' },
-    { keywords: ['discontinued', 'withdrawal', 'stopped'], type: 'filter', column: 'action', value: 'Discontinued' },
-    { keywords: ['primary', 'main endpoint'], type: 'filter', column: 'category', value: 'Primary' },
-    { keywords: ['male', 'female', 'gender'], type: 'groupBy', column: 'gender' },
-    { keywords: ['age group', 'age range'], type: 'groupBy', column: 'age' },
-  ];
+  // Extract literal filter values from the input (e.g., "M/WHITE", specific terms in quotes)
+  const literalValues = [];
   
-  const matchedPatterns = viewPatterns.filter(p => 
-    p.keywords.some(k => inputLower.includes(k))
-  );
+  // Look for quoted values
+  const quotedMatches = inputOriginal.match(/["']([^"']+)["']/g);
+  if (quotedMatches) {
+    quotedMatches.forEach(m => literalValues.push(m.replace(/["']/g, '')));
+  }
+  
+  // Look for uppercase patterns that might be codes (e.g., M/WHITE, TEAE)
+  const uppercaseMatches = inputOriginal.match(/\b[A-Z][A-Z0-9\/]+\b/g);
+  if (uppercaseMatches) {
+    uppercaseMatches.forEach(m => {
+      if (m.length >= 2 && !['AND', 'OR', 'THE', 'FOR', 'ALL', 'WHO', 'ARE'].includes(m)) {
+        literalValues.push(m);
+      }
+    });
+  }
+  
+  // Detect operation type
+  const wantsList = /\b(list|enumerate|show all|all the)\b/i.test(inputOriginal);
+  const wantsCount = /\b(count|number of|how many|total)\b/i.test(inputOriginal);
+  const wantsGroupBy = /\b(by treatment|by group|per arm|each arm|group by)\b/i.test(inputOriginal);
+  
+  // Detect filter conditions
+  const filterConditions = [];
+  
+  // Severity filters
+  if (/\b(serious|severe|grade\s*[3-5])\b/i.test(inputOriginal)) {
+    filterConditions.push({ 
+      columnHints: ['severity', 'serious', 'grade', 'intensity'],
+      value: 'Serious',
+      keyword: inputOriginal.match(/\b(serious|severe|grade\s*[3-5])\b/i)?.[0]
+    });
+  }
+  
+  // Relationship filters
+  if (/\b(treatment-related|drug-related|related)\b/i.test(inputOriginal)) {
+    filterConditions.push({
+      columnHints: ['relationship', 'related', 'causality'],
+      value: 'Related',
+      keyword: inputOriginal.match(/\b(treatment-related|drug-related|related)\b/i)?.[0]
+    });
+  }
+  
+  // Add literal values as potential filters
+  literalValues.forEach(val => {
+    filterConditions.push({
+      columnHints: null, // Will search all columns for this value
+      value: val,
+      keyword: val,
+      isLiteral: true
+    });
+  });
+  
+  // Detect target column for list/count (e.g., "preferred terms", "subject IDs")
+  let targetColumn = null;
+  const targetMatch = inputOriginal.match(/\b(list|count|enumerate)\s+(?:all\s+)?(?:the\s+)?([a-zA-Z\s]+?)(?:\s+for|\s+of|\s+where|$)/i);
+  if (targetMatch) {
+    targetColumn = targetMatch[2].trim().toLowerCase();
+  }
   
   selectedTables.forEach(table => {
     const headers = table.rows?.[0] || [];
     const headersLower = headers.map(h => String(h).toLowerCase());
-    const rowCount = (table.rows?.length || 1) - 1;
-    const tableSuggestions = [];
+    const dataRows = table.rows?.slice(1) || [];
+    const rowCount = dataRows.length;
     
-    matchedPatterns.forEach(pattern => {
-      if (pattern.type === 'filter') {
+    // Build a single combined view suggestion
+    const combinedView = {
+      filters: [],
+      groupBy: [],
+      aggregate: null,
+      targetColumnIdx: null
+    };
+    
+    // Find columns that match filter conditions
+    filterConditions.forEach(condition => {
+      if (condition.columnHints) {
+        // Search by column name hints
         const colIdx = headersLower.findIndex(h => 
-          h.includes(pattern.column) || pattern.column.includes(h)
+          condition.columnHints.some(hint => h.includes(hint))
         );
         if (colIdx >= 0) {
-          tableSuggestions.push({
-            type: 'filter',
+          combinedView.filters.push({
             columnIndex: colIdx,
             columnName: headers[colIdx],
-            suggestedValue: pattern.value,
-            reason: `Filter by "${headers[colIdx]}" based on your mention of "${pattern.keywords.find(k => inputLower.includes(k))}"`
+            value: condition.value,
+            keyword: condition.keyword
           });
         }
-      } else if (pattern.type === 'groupBy') {
-        const colIdx = headersLower.findIndex(h => 
-          h.includes(pattern.column) || pattern.column.includes(h)
-        );
-        if (colIdx >= 0) {
-          tableSuggestions.push({
-            type: 'groupBy',
-            columnIndex: colIdx,
-            columnName: headers[colIdx],
-            reason: `Group by "${headers[colIdx]}" to organize data as mentioned in your input`
+      } else if (condition.isLiteral) {
+        // Search for literal value in data to find which column contains it
+        for (let colIdx = 0; colIdx < headers.length; colIdx++) {
+          const hasValue = dataRows.some(row => {
+            const cellValue = String(row[colIdx] || '').toUpperCase();
+            return cellValue.includes(condition.value.toUpperCase());
           });
-        }
-      } else if (pattern.type === 'aggregate') {
-        const numericCols = headers.filter((h, i) => {
-          if (i === 0) return false;
-          const sampleValues = table.rows?.slice(1, 5).map(r => r[i]) || [];
-          return sampleValues.some(v => !isNaN(parseFloat(v)));
-        });
-        if (numericCols.length > 0 || pattern.action === 'Count') {
-          tableSuggestions.push({
-            type: 'aggregate',
-            action: pattern.action,
-            reason: `${pattern.action} values based on your mention of "${pattern.keywords.find(k => inputLower.includes(k))}"`
-          });
+          if (hasValue) {
+            combinedView.filters.push({
+              columnIndex: colIdx,
+              columnName: headers[colIdx],
+              value: condition.value,
+              keyword: condition.keyword
+            });
+            break; // Only add once per literal value
+          }
         }
       }
     });
     
-    if (tableSuggestions.length === 0 && rowCount > 100) {
-      const categoryCols = headersLower.map((h, i) => ({ h, i }))
-        .filter(({ h }) => h.includes('category') || h.includes('type') || h.includes('class') || h.includes('term'))
-        .map(({ i }) => i);
-      
-      if (categoryCols.length > 0) {
-        tableSuggestions.push({
-          type: 'groupBy',
-          columnIndex: categoryCols[0],
-          columnName: headers[categoryCols[0]],
-          reason: `Consider grouping by "${headers[categoryCols[0]]}" to reduce ${rowCount} rows`
-        });
+    // Find target column for list/count
+    if (targetColumn) {
+      const targetIdx = headersLower.findIndex(h => 
+        h.includes(targetColumn) || targetColumn.split(/\s+/).some(word => h.includes(word))
+      );
+      if (targetIdx >= 0) {
+        combinedView.targetColumnIdx = targetIdx;
+        combinedView.targetColumnName = headers[targetIdx];
       }
     }
     
-    if (tableSuggestions.length > 0) {
+    // If no specific target found, look for common target columns
+    if (combinedView.targetColumnIdx === null) {
+      const commonTargets = ['preferred term', 'pt', 'term', 'event', 'description'];
+      const targetIdx = headersLower.findIndex(h => 
+        commonTargets.some(t => h.includes(t))
+      );
+      if (targetIdx >= 0) {
+        combinedView.targetColumnIdx = targetIdx;
+        combinedView.targetColumnName = headers[targetIdx];
+      }
+    }
+    
+    // Set aggregate operation
+    if (wantsList) {
+      combinedView.aggregate = 'List';
+    } else if (wantsCount) {
+      combinedView.aggregate = 'Count';
+    }
+    
+    // Build the view suggestion
+    if (combinedView.filters.length > 0 || combinedView.aggregate) {
+      const filterDescriptions = combinedView.filters.map(f => 
+        `${f.columnName} = "${f.value}"`
+      );
+      
+      let description = '';
+      let reason = '';
+      
+      if (combinedView.filters.length > 0 && combinedView.aggregate && combinedView.targetColumnName) {
+        description = `Filter (${filterDescriptions.join(' AND ')}), then ${combinedView.aggregate} "${combinedView.targetColumnName}"`;
+        reason = `Based on your instruction to ${combinedView.aggregate.toLowerCase()} ${combinedView.targetColumnName || 'values'} with filters: ${filterDescriptions.join(', ')}`;
+      } else if (combinedView.filters.length > 0 && combinedView.aggregate) {
+        description = `Filter (${filterDescriptions.join(' AND ')}), then ${combinedView.aggregate} values`;
+        reason = `Apply filters ${filterDescriptions.join(', ')} and ${combinedView.aggregate.toLowerCase()} the results`;
+      } else if (combinedView.filters.length > 0) {
+        description = `Filter: ${filterDescriptions.join(' AND ')}`;
+        reason = `Filter the table based on conditions: ${filterDescriptions.join(', ')}`;
+      } else if (combinedView.aggregate && combinedView.targetColumnName) {
+        description = `${combinedView.aggregate} "${combinedView.targetColumnName}"`;
+        reason = `${combinedView.aggregate} values in the ${combinedView.targetColumnName} column`;
+      }
+      
       suggestions.push({
         table: {
           name: table.name,
@@ -209,17 +293,31 @@ export async function suggestViewsForSummary(exampleAndInstruction, selectedTabl
           isPrimary: table.isPrimary
         },
         rowCount,
-        views: tableSuggestions
+        views: [{
+          type: 'combined',
+          description,
+          reason,
+          filters: combinedView.filters,
+          aggregate: combinedView.aggregate,
+          targetColumn: combinedView.targetColumnName,
+          targetColumnIdx: combinedView.targetColumnIdx
+        }]
       });
     }
   });
   
+  const detectedOperations = [];
+  if (filterConditions.length > 0) detectedOperations.push(`${filterConditions.length} filter(s)`);
+  if (wantsList) detectedOperations.push('list operation');
+  if (wantsCount) detectedOperations.push('count operation');
+  if (wantsGroupBy) detectedOperations.push('group by');
+  
   return {
     success: true,
     suggestions,
-    analysis: matchedPatterns.length > 0 
-      ? `Based on your input, I identified patterns suggesting: ${[...new Set(matchedPatterns.map(p => p.type))].join(', ')} operations.`
-      : "I couldn't identify specific view patterns. Try mentioning operations like 'count', 'list', 'group by', or specific filters."
+    analysis: detectedOperations.length > 0 
+      ? `Detected: ${detectedOperations.join(', ')}. I've created a combined view suggestion.`
+      : "I couldn't identify specific patterns. Try mentioning 'list', 'count', filter values, or column names."
   };
 }
 

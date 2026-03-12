@@ -118,7 +118,11 @@ export function SummaryDialog({ table, isRegenerate = false, existingSummaryId =
       viewsByTable[tableKey].push(view);
     });
 
-    // Apply views to each table
+    // Apply views to each table - only open edit modal for the first one
+    let firstTableKey = null;
+    let firstView = null;
+    let firstTableData = null;
+
     Object.entries(viewsByTable).forEach(([tableKey, views]) => {
       const tableData = tableKey === 'primary' 
         ? primaryTable 
@@ -126,29 +130,51 @@ export function SummaryDialog({ table, isRegenerate = false, existingSummaryId =
       
       if (!tableData) return;
 
-      // Create view configs from suggestions
-      views.forEach(view => {
-        const newViewInfo = {
-          mode: view.type === 'aggregate' ? 'aggregate' : 'filter',
-          hasFilters: view.type === 'filter',
-          filters: view.type === 'filter' ? [{
-            columnName: view.columnName,
-            value: view.suggestedValue || ''
-          }] : [],
-          groupBy: view.type === 'groupBy' ? [view.columnName] : [],
-          aggregateColumns: view.type === 'aggregate' ? [] : []
-        };
-
-        // Open edit modal for first suggested view (user can fine-tune)
-        setEditingView({
-          tableKey,
-          viewId: null,
-          table: tableData,
-          viewInfo: newViewInfo,
-          isNew: true
-        });
-      });
+      // Save the first one to open in edit modal
+      if (!firstTableKey) {
+        firstTableKey = tableKey;
+        firstView = views[0];
+        firstTableData = tableData;
+      }
     });
+
+    if (firstTableKey && firstView && firstTableData) {
+      // Build viewInfo from the combined view suggestion
+      let newViewInfo;
+      
+      if (firstView.type === 'combined') {
+        newViewInfo = {
+          mode: firstView.aggregate ? 'aggregate' : 'filter',
+          hasFilters: firstView.filters && firstView.filters.length > 0,
+          filters: (firstView.filters || []).map(f => ({
+            columnName: f.columnName,
+            value: f.value || ''
+          })),
+          groupBy: [],
+          aggregateColumns: firstView.targetColumn ? [firstView.targetColumn] : []
+        };
+      } else {
+        newViewInfo = {
+          mode: firstView.type === 'aggregate' ? 'aggregate' : 'filter',
+          hasFilters: firstView.type === 'filter',
+          filters: firstView.type === 'filter' ? [{
+            columnName: firstView.columnName,
+            value: firstView.suggestedValue || ''
+          }] : [],
+          groupBy: firstView.type === 'groupBy' ? [firstView.columnName] : [],
+          aggregateColumns: firstView.type === 'aggregate' ? [] : []
+        };
+      }
+
+      // Open edit modal for the suggested view
+      setEditingView({
+        tableKey: firstTableKey,
+        viewId: null,
+        table: firstTableData,
+        viewInfo: newViewInfo,
+        isNew: true
+      });
+    }
 
     setShowSuggestionModal(false);
     // Expand all tables that received suggestions

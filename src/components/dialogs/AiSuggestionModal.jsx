@@ -55,6 +55,7 @@ export function AiSuggestionModal({ suggestions, onApplyViews, onClose }) {
       case 'filter': return Filter;
       case 'groupBy': return Layers;
       case 'aggregate': return Layers;
+      case 'combined': return Layers;
       default: return Filter;
     }
   };
@@ -67,6 +68,8 @@ export function AiSuggestionModal({ suggestions, onApplyViews, onClose }) {
         return `Group by: ${view.columnName}`;
       case 'aggregate':
         return `${view.action} values`;
+      case 'combined':
+        return view.description || 'Combined View';
       default:
         return 'View';
     }
